@@ -15,5 +15,17 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    image: migrate/migrate:v4.18.1
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${POSTGRES_USER:-notify}:${POSTGRES_PASSWORD:-notify}@postgres:5432/${POSTGRES_DB:-notifications}?sslmode=disable"
+      - "up"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
