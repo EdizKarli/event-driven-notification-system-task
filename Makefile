@@ -1,4 +1,4 @@
-.PHONY: build test run fmt
+.PHONY: build test run fmt up down logs
 
 build:
 	go build -o bin/ ./...
@@ -11,3 +11,12 @@ run:
 
 fmt:
 	go fmt ./...
+
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f
