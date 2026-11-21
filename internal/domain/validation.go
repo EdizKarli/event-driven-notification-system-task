@@ -148,3 +148,22 @@ func ValidateBatch(items []NewNotification, now time.Time) error {
 	}
 	return nil
 }
+
+func (n NewNotification) ToNotification(id string, now time.Time) *Notification {
+	nextAttemptAt := now
+	if n.ScheduledAt != nil {
+		nextAttemptAt = *n.ScheduledAt
+	}
+	return &Notification{
+		ID:            id,
+		Recipient:     n.Recipient,
+		Channel:       n.Channel,
+		Content:       n.Content,
+		Priority:      n.Priority,
+		Status:        StatusPending,
+		MaxAttempts:   DefaultMaxAttempts,
+		NextAttemptAt: nextAttemptAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+}

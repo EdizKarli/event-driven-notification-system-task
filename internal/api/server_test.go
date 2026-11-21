@@ -10,7 +10,7 @@ import (
 )
 
 func testServer() *Server {
-	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), newFakeStore())
 }
 
 func TestHealth(t *testing.T) {

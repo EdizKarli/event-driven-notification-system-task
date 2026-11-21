@@ -11,27 +11,37 @@ import (
 	"time"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/api"
+	"github.com/EdizKarli/event-driven-notification-system-task/internal/store"
 )
+
+const defaultDatabaseURL = "postgres://notify:notify@localhost:5432/notifications?sslmode=disable"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	port := getEnv("PORT", "8080")
+	databaseURL := getEnv("DATABASE_URL", defaultDatabaseURL)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	st, err := store.New(connectCtx, databaseURL)
+	cancelConnect()
+	if err != nil {
+		logger.Error("database connection failed", "error", err)
+		os.Exit(1)
 	}
+	defer st.Close()
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewServer(logger).Handler(),
+		Handler:           api.NewServer(logger, st).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("server starting", "port", port)
@@ -50,4 +60,11 @@ func main() {
 		logger.Error("shutdown failed", "error", err)
 	}
 	logger.Info("server stopped")
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

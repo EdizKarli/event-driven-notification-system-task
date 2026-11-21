@@ -156,3 +156,28 @@ func TestValidateBatch(t *testing.T) {
 		}
 	})
 }
+
+func TestToNotification(t *testing.T) {
+	t.Run("sends now when not scheduled", func(t *testing.T) {
+		n := validSMS().ToNotification("id-1", testNow)
+		if n.Status != StatusPending {
+			t.Errorf("expected pending, got %q", n.Status)
+		}
+		if !n.NextAttemptAt.Equal(testNow) {
+			t.Errorf("expected next attempt at now, got %v", n.NextAttemptAt)
+		}
+		if n.MaxAttempts != DefaultMaxAttempts {
+			t.Errorf("expected %d max attempts, got %d", DefaultMaxAttempts, n.MaxAttempts)
+		}
+	})
+
+	t.Run("uses scheduled time", func(t *testing.T) {
+		later := testNow.Add(2 * time.Hour)
+		req := validSMS()
+		req.ScheduledAt = &later
+		n := req.ToNotification("id-2", testNow)
+		if !n.NextAttemptAt.Equal(later) {
+			t.Errorf("expected next attempt at %v, got %v", later, n.NextAttemptAt)
+		}
+	})
+}
