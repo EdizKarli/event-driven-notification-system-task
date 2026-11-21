@@ -1,6 +1,13 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+const DefaultMaxAttempts = 5
+
+var ErrNotFound = errors.New("notification not found")
 
 type Channel string
 
