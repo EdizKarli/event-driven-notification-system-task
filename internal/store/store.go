@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -181,4 +183,60 @@ func (s *Store) GetBatch(ctx context.Context, id string) (*domain.Batch, error) 
 		return nil, fmt.Errorf("read batch statuses: %w", err)
 	}
 	return b, nil
+}
+
+func (s *Store) ListNotifications(ctx context.Context, f domain.ListFilter) ([]*domain.Notification, error) {
+	var (
+		conditions []string
+		args       []any
+	)
+	arg := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+
+	if f.Status != nil {
+		conditions = append(conditions, "status = "+arg(string(*f.Status))+"::text::notification_status")
+	}
+	if f.Channel != nil {
+		conditions = append(conditions, "channel = "+arg(string(*f.Channel))+"::text::notification_channel")
+	}
+	if f.BatchID != nil {
+		conditions = append(conditions, "batch_id = "+arg(*f.BatchID)+"::text::uuid")
+	}
+	if f.From != nil {
+		conditions = append(conditions, "created_at >= "+arg(*f.From))
+	}
+	if f.To != nil {
+		conditions = append(conditions, "created_at < "+arg(*f.To))
+	}
+	if f.After != nil {
+		conditions = append(conditions,
+			"(created_at, id) < ("+arg(f.After.CreatedAt)+", "+arg(f.After.ID)+"::text::uuid)")
+	}
+
+	query := "SELECT " + notificationColumns + " FROM notifications"
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT " + arg(f.Limit)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list notifications: %w", err)
+	}
+	defer rows.Close()
+
+	result := []*domain.Notification{}
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan notification: %w", err)
+		}
+		result = append(result, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read notifications: %w", err)
+	}
+	return result, nil
 }

@@ -116,3 +116,18 @@ type Batch struct {
 	StatusCounts map[Status]int `json:"status_counts"`
 	CreatedAt    time.Time      `json:"created_at"`
 }
+
+type Cursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type ListFilter struct {
+	Status  *Status
+	Channel *Channel
+	BatchID *string
+	From    *time.Time
+	To      *time.Time
+	After   *Cursor
+	Limit   int
+}

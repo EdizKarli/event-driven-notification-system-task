@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
@@ -78,4 +79,52 @@ func (f *fakeStore) GetBatch(ctx context.Context, id string) (*domain.Batch, err
 		}
 	}
 	return &result, nil
+}
+
+func (f *fakeStore) ListNotifications(ctx context.Context, filter domain.ListFilter) ([]*domain.Notification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var matched []*domain.Notification
+	for _, n := range f.items {
+		if filter.Status != nil && n.Status != *filter.Status {
+			continue
+		}
+		if filter.Channel != nil && n.Channel != *filter.Channel {
+			continue
+		}
+		if filter.BatchID != nil && (n.BatchID == nil || *n.BatchID != *filter.BatchID) {
+			continue
+		}
+		if filter.From != nil && n.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && !n.CreatedAt.Before(*filter.To) {
+			continue
+		}
+		if filter.After != nil && !isBefore(n, filter.After) {
+			continue
+		}
+		copied := *n
+		matched = append(matched, &copied)
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+
+	if len(matched) > filter.Limit {
+		matched = matched[:filter.Limit]
+	}
+	return matched, nil
+}
+
+func isBefore(n *domain.Notification, c *domain.Cursor) bool {
+	if n.CreatedAt.Equal(c.CreatedAt) {
+		return n.ID < c.ID
+	}
+	return n.CreatedAt.Before(c.CreatedAt)
 }

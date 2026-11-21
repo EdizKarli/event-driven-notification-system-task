@@ -15,6 +15,7 @@ type NotificationStore interface {
 	GetNotification(ctx context.Context, id string) (*domain.Notification, error)
 	CreateBatch(ctx context.Context, batch *domain.Batch, items []*domain.Notification) error
 	GetBatch(ctx context.Context, id string) (*domain.Batch, error)
+	ListNotifications(ctx context.Context, f domain.ListFilter) ([]*domain.Notification, error)
 }
 
 type Server struct {
@@ -30,6 +31,7 @@ func NewServer(logger *slog.Logger, store NotificationStore) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /notifications", s.handleCreateNotification)
 	mux.HandleFunc("GET /notifications/{id}", s.handleGetNotification)
 	mux.HandleFunc("POST /notifications/batch", s.handleCreateBatch)
