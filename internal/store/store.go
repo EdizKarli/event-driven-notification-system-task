@@ -68,18 +68,37 @@ func scanNotification(row pgx.Row) (*domain.Notification, error) {
 }
 
 func (s *Store) CreateNotification(ctx context.Context, n *domain.Notification) error {
+	var idempotencyKey string
+	if n.IdempotencyKey != nil {
+		idempotencyKey = *n.IdempotencyKey
+	}
+
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO notifications (id, recipient, channel, content, priority, max_attempts, next_attempt_at, correlation_id)
-		VALUES ($1::text::uuid, $2, $3::text::notification_channel, $4, $5, $6, $7, NULLIF($8::text, ''))
+		INSERT INTO notifications
+			(id, recipient, channel, content, priority, max_attempts, next_attempt_at, correlation_id, idempotency_key)
+		VALUES ($1::text::uuid, $2, $3::text::notification_channel, $4, $5, $6, $7, NULLIF($8::text, ''), NULLIF($9::text, ''))
+		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+notificationColumns,
-		n.ID, n.Recipient, string(n.Channel), n.Content, n.Priority.Rank(), n.MaxAttempts, n.NextAttemptAt, n.CorrelationID,
+		n.ID, n.Recipient, string(n.Channel), n.Content, n.Priority.Rank(), n.MaxAttempts, n.NextAttemptAt,
+		n.CorrelationID, idempotencyKey,
 	)
 	created, err := scanNotification(row)
-	if err != nil {
+	if err == nil {
+		*n = *created
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("insert notification: %w", err)
 	}
-	*n = *created
-	return nil
+
+	existing, err := scanNotification(s.pool.QueryRow(ctx,
+		`SELECT `+notificationColumns+` FROM notifications WHERE idempotency_key = $1`, idempotencyKey,
+	))
+	if err != nil {
+		return fmt.Errorf("get notification by idempotency key: %w", err)
+	}
+	*n = *existing
+	return domain.ErrDuplicate
 }
 
 func (s *Store) GetNotification(ctx context.Context, id string) (*domain.Notification, error) {

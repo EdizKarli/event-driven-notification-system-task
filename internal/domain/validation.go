@@ -167,3 +167,10 @@ func (n NewNotification) ToNotification(id string, now time.Time) *Notification 
 		UpdatedAt:     now,
 	}
 }
+
+func (n NewNotification) Matches(existing *Notification) bool {
+	return n.Recipient == existing.Recipient &&
+		n.Channel == existing.Channel &&
+		n.Content == existing.Content &&
+		n.Priority == existing.Priority
+}

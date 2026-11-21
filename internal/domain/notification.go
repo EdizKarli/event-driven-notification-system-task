@@ -11,6 +11,7 @@ var (
 	ErrNotFound       = errors.New("notification not found")
 	ErrBatchNotFound  = errors.New("batch not found")
 	ErrNotCancellable = errors.New("notification cannot be cancelled")
+	ErrDuplicate      = errors.New("idempotency key already used")
 )
 
 type Channel string

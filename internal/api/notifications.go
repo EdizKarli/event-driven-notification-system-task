@@ -3,13 +3,26 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
 )
 
+const (
+	IdempotencyKeyHeader     = "Idempotency-Key"
+	IdempotentReplayedHeader = "Idempotent-Replayed"
+	maxIdempotencyKeyLength  = 255
+)
+
 func (s *Server) handleCreateNotification(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.Header.Get(IdempotencyKeyHeader))
+	if len(key) > maxIdempotencyKeyLength {
+		writeError(w, http.StatusBadRequest, "Idempotency-Key must be at most 255 characters")
+		return
+	}
+
 	var req domain.NewNotification
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -30,8 +43,25 @@ func (s *Server) handleCreateNotification(w http.ResponseWriter, r *http.Request
 
 	n := req.ToNotification(uuid.NewString(), now)
 	n.CorrelationID = CorrelationIDFrom(r.Context())
+	if key != "" {
+		n.IdempotencyKey = &key
+	}
 
-	if err := s.store.CreateNotification(r.Context(), n); err != nil {
+	err := s.store.CreateNotification(r.Context(), n)
+	switch {
+	case errors.Is(err, domain.ErrDuplicate):
+		if !req.Matches(n) {
+			writeError(w, http.StatusConflict, "idempotency key was already used with a different request")
+			return
+		}
+		s.logger.Info("idempotent replay",
+			"notification_id", n.ID,
+			"correlation_id", CorrelationIDFrom(r.Context()),
+		)
+		w.Header().Set(IdempotentReplayedHeader, "true")
+		writeJSON(w, http.StatusAccepted, n)
+		return
+	case err != nil:
 		s.logger.Error("create notification failed", "error", err, "correlation_id", n.CorrelationID)
 		writeError(w, http.StatusInternalServerError, "could not create notification")
 		return
