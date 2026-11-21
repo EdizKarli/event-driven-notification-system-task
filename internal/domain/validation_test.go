@@ -181,3 +181,17 @@ func TestToNotification(t *testing.T) {
 		}
 	})
 }
+
+func TestMatches(t *testing.T) {
+	req := validSMS()
+	existing := req.ToNotification("id-1", testNow)
+
+	if !req.Matches(existing) {
+		t.Fatal("expected identical request to match")
+	}
+
+	req.Content = "something else"
+	if req.Matches(existing) {
+		t.Fatal("expected different content not to match")
+	}
+}

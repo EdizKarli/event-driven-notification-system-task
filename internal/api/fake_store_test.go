@@ -33,6 +33,14 @@ func (f *fakeStore) CreateNotification(ctx context.Context, n *domain.Notificati
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if n.IdempotencyKey != nil {
+		for _, existing := range f.items {
+			if existing.IdempotencyKey != nil && *existing.IdempotencyKey == *n.IdempotencyKey {
+				*n = *existing
+				return domain.ErrDuplicate
+			}
+		}
+	}
 	stored := *n
 	f.items[n.ID] = &stored
 	return nil
