@@ -240,3 +240,24 @@ func (s *Store) ListNotifications(ctx context.Context, f domain.ListFilter) ([]*
 	}
 	return result, nil
 }
+
+func (s *Store) CancelNotification(ctx context.Context, id string) (*domain.Notification, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE notifications
+		SET status = 'cancelled', updated_at = now()
+		WHERE id = $1::text::uuid AND status = 'pending'
+		RETURNING `+notificationColumns, id)
+	n, err := scanNotification(row)
+	if err == nil {
+		return n, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("cancel notification: %w", err)
+	}
+
+	current, err := s.GetNotification(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return current, domain.ErrNotCancellable
+}

@@ -128,3 +128,19 @@ func isBefore(n *domain.Notification, c *domain.Cursor) bool {
 	}
 	return n.CreatedAt.Before(c.CreatedAt)
 }
+
+func (f *fakeStore) CancelNotification(ctx context.Context, id string) (*domain.Notification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.items[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if !n.Status.CanCancel() {
+		copied := *n
+		return &copied, domain.ErrNotCancellable
+	}
+	n.Status = domain.StatusCancelled
+	copied := *n
+	return &copied, nil
+}

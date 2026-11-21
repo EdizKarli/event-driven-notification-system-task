@@ -65,3 +65,30 @@ func (s *Server) handleGetNotification(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, n)
 }
+
+func (s *Server) handleCancelNotification(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid notification id")
+		return
+	}
+
+	correlationID := CorrelationIDFrom(r.Context())
+	n, err := s.store.CancelNotification(r.Context(), id.String())
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		writeError(w, http.StatusNotFound, "notification not found")
+		return
+	case errors.Is(err, domain.ErrNotCancellable):
+		writeError(w, http.StatusConflict,
+			"only pending notifications can be cancelled, current status is "+string(n.Status))
+		return
+	case err != nil:
+		s.logger.Error("cancel notification failed", "error", err, "correlation_id", correlationID)
+		writeError(w, http.StatusInternalServerError, "could not cancel notification")
+		return
+	}
+
+	s.logger.Info("notification cancelled", "notification_id", n.ID, "correlation_id", correlationID)
+	writeJSON(w, http.StatusOK, n)
+}

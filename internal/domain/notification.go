@@ -8,8 +8,9 @@ import (
 const DefaultMaxAttempts = 5
 
 var (
-	ErrNotFound      = errors.New("notification not found")
-	ErrBatchNotFound = errors.New("batch not found")
+	ErrNotFound       = errors.New("notification not found")
+	ErrBatchNotFound  = errors.New("batch not found")
+	ErrNotCancellable = errors.New("notification cannot be cancelled")
 )
 
 type Channel string
