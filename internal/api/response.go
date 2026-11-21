@@ -8,7 +8,7 @@ import (
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
 )
 
-const maxBodyBytes = 5 << 20
+const maxBodyBytes = 16 << 20
 
 type errorResponse struct {
 	Error   string              `json:"error"`
