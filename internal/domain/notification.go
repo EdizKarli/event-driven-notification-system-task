@@ -7,7 +7,10 @@ import (
 
 const DefaultMaxAttempts = 5
 
-var ErrNotFound = errors.New("notification not found")
+var (
+	ErrNotFound      = errors.New("notification not found")
+	ErrBatchNotFound = errors.New("batch not found")
+)
 
 type Channel string
 
@@ -105,4 +108,11 @@ type Notification struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 	SentAt            *time.Time `json:"sent_at,omitempty"`
+}
+
+type Batch struct {
+	ID           string         `json:"id"`
+	Total        int            `json:"total"`
+	StatusCounts map[Status]int `json:"status_counts"`
+	CreatedAt    time.Time      `json:"created_at"`
 }

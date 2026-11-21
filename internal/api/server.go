@@ -13,6 +13,8 @@ type NotificationStore interface {
 	Ping(ctx context.Context) error
 	CreateNotification(ctx context.Context, n *domain.Notification) error
 	GetNotification(ctx context.Context, id string) (*domain.Notification, error)
+	CreateBatch(ctx context.Context, batch *domain.Batch, items []*domain.Notification) error
+	GetBatch(ctx context.Context, id string) (*domain.Batch, error)
 }
 
 type Server struct {
@@ -30,6 +32,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /notifications", s.handleCreateNotification)
 	mux.HandleFunc("GET /notifications/{id}", s.handleGetNotification)
+	mux.HandleFunc("POST /notifications/batch", s.handleCreateBatch)
+	mux.HandleFunc("GET /batches/{id}", s.handleGetBatch)
 
 	var h http.Handler = mux
 	h = recoverer(s.logger)(h)
