@@ -83,3 +83,19 @@ func TestRecovererReturns500(t *testing.T) {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
 }
+
+func TestCORSPreflight(t *testing.T) {
+	req := httptest.NewRequest(http.MethodOptions, "/notifications", nil)
+	req.Header.Set("Origin", "http://localhost:8081")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+
+	testServer().Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatal("expected CORS allow origin header")
+	}
+}

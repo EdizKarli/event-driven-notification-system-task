@@ -51,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	h = recoverer(s.logger)(h)
 	h = requestLogger(s.logger)(h)
 	h = correlationID(h)
+	h = cors(h)
 	return h
 }
 
