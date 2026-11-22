@@ -390,18 +390,3 @@ internal/metrics/    in-memory counters and latency percentiles
 migrations/          versioned SQL migrations (golang-migrate)
 api/openapi.yaml     OpenAPI 3 specification
 ```
-
-## Future work
-
-Next steps for taking the service further:
-
-- **Shared rate limiter.** Move the per channel token bucket to Redis so the 100 messages per second limit holds across several worker instances.
-- **Priority aging.** Raise the priority of notifications that have waited a long time, so low priority messages are not delayed during long streams of high priority traffic.
-- **Batch idempotency.** Accept an `Idempotency-Key` for batch requests by adding a key column to `batches`.
-- **Prometheus and Grafana.** Expose metrics as Prometheus counters and histograms, keep them across restarts, and add dashboards and alerts on queue growth and success rate.
-- **Real providers.** Add a dedicated client per channel for real SMS, email and push providers behind the existing provider interface, each returning its own message id.
-- **Template system.** Store message templates in a `templates` table and render their variables when a notification is created.
-- **WebSocket updates.** Push status changes to clients in real time, for example with Postgres `LISTEN/NOTIFY` from the worker.
-- **Distributed tracing.** Add OpenTelemetry spans across the API, the worker and the provider call, with the trace context stored next to the correlation id.
-- **Retention.** Archive delivered notifications or partition the table by date.
-- **Authentication** for API consumers.
