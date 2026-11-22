@@ -412,8 +412,8 @@ type countingMetrics struct {
 }
 
 func (m *countingMetrics) RecordSent(domain.Channel, time.Duration, time.Duration) { m.sent.Add(1) }
-func (m *countingMetrics) RecordFailed(domain.Channel) { m.failed.Add(1) }
-func (m *countingMetrics) RecordRetry(domain.Channel) { m.retried.Add(1) }
+func (m *countingMetrics) RecordFailed(domain.Channel)                             { m.failed.Add(1) }
+func (m *countingMetrics) RecordRetry(domain.Channel)                              { m.retried.Add(1) }
 
 func TestWorkerRecordsMetrics(t *testing.T) {
 	last := pending("last", domain.ChannelSMS)

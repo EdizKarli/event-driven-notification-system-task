@@ -10,9 +10,9 @@ import (
 )
 
 type metricsResponse struct {
-	Timestamp  time.Time                              `json:"timestamp"`
+	Timestamp  time.Time                               `json:"timestamp"`
 	Queue      map[domain.Channel]*domain.ChannelQueue `json:"queue"`
-	Deliveries metrics.Snapshot                       `json:"deliveries"`
+	Deliveries metrics.Snapshot                        `json:"deliveries"`
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {

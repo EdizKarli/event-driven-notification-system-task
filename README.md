@@ -1,5 +1,7 @@
 # Event-Driven Notification System
 
+[![CI](https://github.com/EdizKarli/event-driven-notification-system-task/actions/workflows/ci.yml/badge.svg)](https://github.com/EdizKarli/event-driven-notification-system-task/actions/workflows/ci.yml)
+
 A notification service written in Go that accepts SMS, email and push notifications through a REST API, queues them in PostgreSQL and delivers them asynchronously through an external provider (simulated with [webhook.site](https://webhook.site)).
 
 It supports priorities, batch creation, scheduling, cancellation, idempotent requests, per channel rate limiting, retries with exponential backoff, recovery of stuck work, structured logging with correlation ids and a real-time metrics endpoint.
@@ -269,7 +271,13 @@ make test-race   # with the race detector (needs cgo)
 
 The suite covers validation rules, every HTTP handler (against an in-memory store), cursor pagination, idempotency, the provider client against `httptest` servers (success, every error class, timeouts, refused connections), the worker (claiming per channel, bounded concurrency, rate limiting, retry and failure paths, metrics) and backoff and metrics calculations. It runs offline and needs no database.
 
-Other `make` targets: `build`, `run`, `fmt`, `up`, `down`, `logs`.
+Other `make` targets: `build`, `run`, `fmt`, `lint`, `up`, `down`, `logs`.
+
+**Continuous integration.** GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every pull request and every push to `main`, in three parallel jobs:
+
+- **Lint:** `gofmt` check, `go vet` and `golangci-lint`
+- **Test:** the full suite with the race detector, plus a coverage summary
+- **Docker build:** validates `docker-compose.yml` and builds the application image
 
 ## Project structure
 
