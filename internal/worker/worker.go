@@ -32,8 +32,8 @@ type Metrics interface {
 type noopMetrics struct{}
 
 func (noopMetrics) RecordSent(domain.Channel, time.Duration, time.Duration) {}
-func (noopMetrics) RecordFailed(domain.Channel) {}
-func (noopMetrics) RecordRetry(domain.Channel) {}
+func (noopMetrics) RecordFailed(domain.Channel)                             {}
+func (noopMetrics) RecordRetry(domain.Channel)                              {}
 
 type Sender interface {
 	Send(ctx context.Context, n *domain.Notification) (*provider.Response, error)
