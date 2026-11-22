@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -15,14 +16,21 @@ import (
 )
 
 type fakeStore struct {
-	mu      sync.Mutex
-	pending []*domain.Notification
-	sent    map[string]string
-	failed  map[string]string
+	mu           sync.Mutex
+	pending      []*domain.Notification
+	sent         map[string]string
+	failed       map[string]string
+	retries      map[string]time.Time
+	recoverCalls atomic.Int32
 }
 
 func newFakeStore(items ...*domain.Notification) *fakeStore {
-	return &fakeStore{pending: items, sent: map[string]string{}, failed: map[string]string{}}
+	return &fakeStore{
+		pending: items,
+		sent:    map[string]string{},
+		failed:  map[string]string{},
+		retries: map[string]time.Time{},
+	}
 }
 
 func (f *fakeStore) ClaimNotifications(ctx context.Context, ch domain.Channel, limit int, lease time.Duration) ([]*domain.Notification, error) {
@@ -57,6 +65,18 @@ func (f *fakeStore) MarkFailed(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+func (f *fakeStore) MarkRetry(ctx context.Context, id, reason string, nextAttemptAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retries[id] = nextAttemptAt
+	return nil
+}
+
+func (f *fakeStore) RecoverStuck(ctx context.Context) (int64, error) {
+	f.recoverCalls.Add(1)
+	return 0, nil
+}
+
 func (f *fakeStore) counts() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -78,17 +98,25 @@ func okSender() *fakeSender {
 }
 
 func pending(id string, ch domain.Channel) *domain.Notification {
-	return &domain.Notification{ID: id, Channel: ch, Status: domain.StatusPending, Priority: domain.PriorityNormal}
+	return &domain.Notification{
+		ID:          id,
+		Channel:     ch,
+		Status:      domain.StatusPending,
+		Priority:    domain.PriorityNormal,
+		MaxAttempts: domain.DefaultMaxAttempts,
+	}
 }
 
 func testConfig() Config {
 	return Config{
-		BatchSize:     10,
-		Concurrency:   4,
-		PollInterval:  10 * time.Millisecond,
-		Lease:         time.Second,
-		SendTimeout:   time.Second,
-		RatePerSecond: 0,
+		BatchSize:       10,
+		Concurrency:     4,
+		PollInterval:    10 * time.Millisecond,
+		Lease:           time.Second,
+		SendTimeout:     time.Second,
+		RatePerSecond:   0,
+		Backoff:         Backoff{Base: time.Second, Max: time.Minute},
+		RecoverInterval: 10 * time.Millisecond,
 	}
 }
 
@@ -297,5 +325,84 @@ func TestNoRateLimitWhenDisabled(t *testing.T) {
 	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("expected no throttling, took %v", elapsed)
+	}
+}
+
+func failingSender(err error) *fakeSender {
+	return &fakeSender{send: func(n *domain.Notification) (*provider.Response, error) {
+		return nil, err
+	}}
+}
+
+func TestRetryableErrorSchedulesRetry(t *testing.T) {
+	store := newFakeStore(pending("a", domain.ChannelSMS))
+	w := newTestWorker(store, failingSender(&provider.Error{StatusCode: 503, Retryable: true}), testConfig())
+
+	before := time.Now()
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+
+	next, ok := store.retries["a"]
+	if !ok {
+		t.Fatal("expected a retry to be scheduled")
+	}
+	if !next.After(before) {
+		t.Errorf("expected next attempt in the future, got %v", next)
+	}
+	if _, failed := store.failed["a"]; failed {
+		t.Error("notification should not be failed yet")
+	}
+}
+
+func TestPermanentErrorFailsImmediately(t *testing.T) {
+	store := newFakeStore(pending("a", domain.ChannelSMS))
+	w := newTestWorker(store, failingSender(&provider.Error{StatusCode: 400, Retryable: false}), testConfig())
+
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+
+	if _, ok := store.failed["a"]; !ok {
+		t.Fatal("expected notification to fail on first attempt")
+	}
+	if _, ok := store.retries["a"]; ok {
+		t.Fatal("permanent errors must not be retried")
+	}
+}
+
+func TestLastAttemptFails(t *testing.T) {
+	n := pending("a", domain.ChannelSMS)
+	n.Attempts = domain.DefaultMaxAttempts - 1
+	store := newFakeStore(n)
+	w := newTestWorker(store, failingSender(&provider.Error{StatusCode: 500, Retryable: true}), testConfig())
+
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+
+	if _, ok := store.failed["a"]; !ok {
+		t.Fatal("expected notification to fail after the last attempt")
+	}
+	if _, ok := store.retries["a"]; ok {
+		t.Fatal("no retry should be scheduled after the last attempt")
+	}
+}
+
+func TestUnknownErrorIsRetried(t *testing.T) {
+	store := newFakeStore(pending("a", domain.ChannelSMS))
+	w := newTestWorker(store, failingSender(errors.New("something unexpected")), testConfig())
+
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+
+	if _, ok := store.retries["a"]; !ok {
+		t.Fatal("expected unknown errors to be retried")
+	}
+}
+
+func TestRunRecoversStuckNotifications(t *testing.T) {
+	store := newFakeStore()
+	w := newTestWorker(store, okSender(), testConfig())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	w.Run(ctx)
+
+	if store.recoverCalls.Load() == 0 {
+		t.Fatal("expected the recovery loop to run")
 	}
 }
