@@ -395,3 +395,67 @@ func (s *Store) RecoverStuck(ctx context.Context) (int64, error) {
 	}
 	return tag.RowsAffected(), nil
 }
+
+func (s *Store) QueueDepth(ctx context.Context) (map[domain.Channel]*domain.ChannelQueue, error) {
+	depth := domain.NewQueueDepth()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT channel::text, priority, next_attempt_at <= now() AS ready, count(*)
+		FROM notifications
+		WHERE status = 'pending'
+		GROUP BY 1, 2, 3`)
+	if err != nil {
+		return nil, fmt.Errorf("queue depth: %w", err)
+	}
+	for rows.Next() {
+		var (
+			channel  string
+			priority int16
+			ready    bool
+			count    int
+		)
+		if err := rows.Scan(&channel, &priority, &ready, &count); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan queue depth: %w", err)
+		}
+		q, ok := depth[domain.Channel(channel)]
+		if !ok {
+			continue
+		}
+		if ready {
+			q.Ready[domain.PriorityFromRank(int(priority))] += count
+		} else {
+			q.Scheduled += count
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read queue depth: %w", err)
+	}
+
+	rows, err = s.pool.Query(ctx, `
+		SELECT channel::text, count(*)
+		FROM notifications
+		WHERE status = 'processing'
+		GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("processing depth: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			channel string
+			count   int
+		)
+		if err := rows.Scan(&channel, &count); err != nil {
+			return nil, fmt.Errorf("scan processing depth: %w", err)
+		}
+		if q, ok := depth[domain.Channel(channel)]; ok {
+			q.Processing = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read processing depth: %w", err)
+	}
+	return depth, nil
+}

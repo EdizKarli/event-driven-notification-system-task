@@ -12,10 +12,11 @@ import (
 	"testing"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
+	"github.com/EdizKarli/event-driven-notification-system-task/internal/metrics"
 )
 
 func newTestServer(store *fakeStore) http.Handler {
-	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), store).Handler()
+	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), store, metrics.New()).Handler()
 }
 
 func doRequest(h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {

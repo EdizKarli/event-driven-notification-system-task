@@ -133,3 +133,21 @@ type ListFilter struct {
 	After   *Cursor
 	Limit   int
 }
+
+type ChannelQueue struct {
+	Ready      map[Priority]int `json:"ready"`
+	Scheduled  int              `json:"scheduled"`
+	Processing int              `json:"processing"`
+}
+
+func NewQueueDepth() map[Channel]*ChannelQueue {
+	depth := make(map[Channel]*ChannelQueue, len(Channels))
+	for _, ch := range Channels {
+		depth[ch] = &ChannelQueue{Ready: map[Priority]int{
+			PriorityHigh:   0,
+			PriorityNormal: 0,
+			PriorityLow:    0,
+		}}
+	}
+	return depth
+}
