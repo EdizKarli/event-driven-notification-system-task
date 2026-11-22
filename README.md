@@ -4,18 +4,45 @@
 
 A notification service written in Go that accepts SMS, email and push notifications through a REST API, queues them in PostgreSQL and delivers them asynchronously through an external provider (simulated with [webhook.site](https://webhook.site)).
 
-It supports priorities, batch creation, scheduling, cancellation, idempotent requests, per channel rate limiting, retries with exponential backoff, recovery of stuck work, structured logging with correlation ids and a real-time metrics endpoint.
+## Features
+
+**For API consumers**
+
+- Send a notification over SMS, email or push with a priority (high, normal, low)
+- Send up to 1000 notifications in one batch request
+- Schedule a notification for a future time
+- Check the status of a notification by id, or of a whole batch by batch id
+- List notifications filtered by status, channel, batch or date range, with pagination
+- Cancel a notification that has not been sent yet
+- Retry requests safely with an `Idempotency-Key`, without creating duplicates
+
+**Behind the API**
+
+- Asynchronous delivery by background workers, highest priority first
+- At most 100 messages per second per channel
+- Automatic retries with exponential backoff for temporary provider errors, immediate failure for permanent ones
+- Recovery of notifications left in progress by a crash
+- Validation of recipients and content length per channel
+
+**For operators**
+
+- `GET /metrics`: queue depth, success and failure rates, latency percentiles
+- `GET /health`: liveness and database check
+- JSON logs with a correlation id that follows each notification from the API to its delivery
+- Swagger UI for exploring and trying the API
 
 ## Contents
 
+- [Features](#features)
 - [Quick start](#quick-start)
+- [Try it](#try-it)
 - [Architecture](#architecture)
 - [Design decisions](#design-decisions)
 - [API](#api)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Project structure](#project-structure)
-- [Trade-offs and future work](#trade-offs-and-future-work)
+- [Future work](#future-work)
 
 ## Quick start
 
@@ -55,7 +82,78 @@ curl -i -X POST http://localhost:8080/notifications \
   -d '{"recipient":"+905551234567","channel":"sms","content":"Hello","priority":"high"}'
 ```
 
-Within a second the request appears on your webhook.site page and `GET /notifications/{id}` shows `"status": "sent"`.
+Within a second the request appears on your webhook.site page. The next section shows how to follow it.
+
+**4. Stop or reset.**
+
+```bash
+docker compose down      # stop, keep the data
+docker compose down -v   # stop and delete the database volume for a clean start
+```
+
+## Try it
+
+A short tour with the stack running. The examples use `curl` and `jq`; Swagger UI at http://localhost:8081 can do the same from the browser with **Try it out**.
+
+**Create a notification and keep its id**
+
+```bash
+ID=$(curl -s -X POST http://localhost:8080/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"recipient":"+905551234567","channel":"sms","content":"Hello","priority":"high"}' | jq -r .id)
+echo $ID
+```
+
+The response is `202 Accepted` with `"status": "pending"`: the notification is queued, not sent yet.
+
+**Check its status**
+
+```bash
+curl -s http://localhost:8080/notifications/$ID | jq '{status, attempts, provider_message_id, sent_at}'
+```
+
+A moment later the status is `sent`, with the `provider_message_id` returned by webhook.site.
+
+**Follow it in the logs**
+
+```bash
+docker compose logs -f app
+```
+
+The `notification created` line from the API and the `notification sent` line from the worker carry the same `correlation_id`.
+
+**Send a batch and check it**
+
+```bash
+BATCH=$(curl -s -X POST http://localhost:8080/notifications/batch \
+  -H 'Content-Type: application/json' \
+  -d '{"notifications":[
+        {"recipient":"+905551234567","channel":"sms","content":"Flash sale"},
+        {"recipient":"user@example.com","channel":"email","content":"Flash sale","priority":"high"},
+        {"recipient":"device-token-1","channel":"push","content":"Flash sale","priority":"low"}]}' | jq -r .batch_id)
+
+curl -s http://localhost:8080/batches/$BATCH | jq
+```
+
+**Schedule one for later and cancel it**
+
+```bash
+LATER=$(curl -s -X POST http://localhost:8080/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"recipient":"+905551234567","channel":"sms","content":"Reminder","scheduled_at":"2030-01-01T09:00:00Z"}' | jq -r .id)
+
+curl -s -X POST http://localhost:8080/notifications/$LATER/cancel | jq .status
+```
+
+**Look at the metrics**
+
+```bash
+curl -s http://localhost:8080/metrics | jq
+```
+
+**See a retry happen**
+
+Change the webhook.site status code to `500` and send a notification. The logs show `notification will be retried` with a growing delay, and `attempts` goes up. Set the status code back to `202` before the fifth attempt and the notification is delivered on the next try.
 
 ## Architecture
 
@@ -69,7 +167,7 @@ client ──HTTP──▶ ┌────────────────�
                             PostgreSQL: notifications table = state + queue
 ```
 
-The API and the worker run in the same binary but share nothing except the database, so they can be split into separate deployments without code changes.
+The API and the worker run in the same binary. They share the database, which holds all notification state and the queue, and an in-memory metrics recorder that the worker writes to and `GET /metrics` reads from. Splitting them into separate deployments would mainly require moving the delivery metrics to a shared system such as Prometheus. Running more than one worker instance would also need a shared rate limiter (see [Future work](#future-work)); the queue itself already works across any number of instances.
 
 **Lifecycle of a notification:**
 
@@ -293,15 +391,17 @@ migrations/          versioned SQL migrations (golang-migrate)
 api/openapi.yaml     OpenAPI 3 specification
 ```
 
-## Trade-offs and future work
+## Future work
 
-The scope was kept to the requirements and a few bonus features within the expected time. Known limitations and the next steps I would take:
+Next steps for taking the service further:
 
-- **Rate limit across instances.** The limiter lives in process memory, which is exact for one instance. Running several instances would need a shared limiter, for example a token bucket in Redis.
-- **Priority starvation.** Strict priority ordering can delay low priority messages during a long stream of high priority traffic. Aging (raising priority with waiting time) would fix this.
-- **Batch idempotency.** Idempotency keys are supported for single notifications. Batches would need a key column on `batches`.
-- **Prometheus.** Metrics are JSON and reset on restart. In production they would be Prometheus counters and histograms with Grafana dashboards and alerts on queue growth and success rate.
-- **Real providers.** One generic provider client is used for all channels. Real SMS, email and push providers would each get their own client behind the same interface, and the static `messageId` returned by webhook.site would be a real per-message id.
-- **Not implemented bonus features:** message templates, WebSocket status updates and distributed tracing. Templates would be a `templates` table with variables rendered at creation time; WebSocket updates could use Postgres `LISTEN/NOTIFY` from the worker; tracing would use OpenTelemetry with the trace context stored next to the correlation id.
-- **Retention.** Delivered notifications stay in the table forever. A production setup would archive or partition by date.
-- **Authentication** is out of scope.
+- **Shared rate limiter.** Move the per channel token bucket to Redis so the 100 messages per second limit holds across several worker instances.
+- **Priority aging.** Raise the priority of notifications that have waited a long time, so low priority messages are not delayed during long streams of high priority traffic.
+- **Batch idempotency.** Accept an `Idempotency-Key` for batch requests by adding a key column to `batches`.
+- **Prometheus and Grafana.** Expose metrics as Prometheus counters and histograms, keep them across restarts, and add dashboards and alerts on queue growth and success rate.
+- **Real providers.** Add a dedicated client per channel for real SMS, email and push providers behind the existing provider interface, each returning its own message id.
+- **Template system.** Store message templates in a `templates` table and render their variables when a notification is created.
+- **WebSocket updates.** Push status changes to clients in real time, for example with Postgres `LISTEN/NOTIFY` from the worker.
+- **Distributed tracing.** Add OpenTelemetry spans across the API, the worker and the provider call, with the trace context stored next to the correlation id.
+- **Retention.** Archive delivered notifications or partition the table by date.
+- **Authentication** for API consumers.
