@@ -83,11 +83,12 @@ func pending(id string, ch domain.Channel) *domain.Notification {
 
 func testConfig() Config {
 	return Config{
-		BatchSize:    10,
-		Concurrency:  4,
-		PollInterval: 10 * time.Millisecond,
-		Lease:        time.Second,
-		SendTimeout:  time.Second,
+		BatchSize:     10,
+		Concurrency:   4,
+		PollInterval:  10 * time.Millisecond,
+		Lease:         time.Second,
+		SendTimeout:   time.Second,
+		RatePerSecond: 0,
 	}
 }
 
@@ -226,5 +227,75 @@ func TestRunProcessesAllChannelsAndStops(t *testing.T) {
 	}
 	if sent, _ := store.counts(); sent != 3 {
 		t.Fatalf("expected 3 sent, got %d", sent)
+	}
+}
+
+func manyPending(prefix string, ch domain.Channel, count int) []*domain.Notification {
+	items := make([]*domain.Notification, count)
+	for i := range items {
+		items[i] = pending(prefix+string(rune('a'+i)), ch)
+	}
+	return items
+}
+
+func TestRateLimitSlowsDownSending(t *testing.T) {
+	store := newFakeStore(manyPending("sms-", domain.ChannelSMS, 20)...)
+	cfg := testConfig()
+	cfg.BatchSize = 20
+	cfg.Concurrency = 10
+	cfg.RatePerSecond = 50
+	w := newTestWorker(store, okSender(), cfg)
+
+	start := time.Now()
+	if _, err := w.processBatch(context.Background(), domain.ChannelSMS); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed < 300*time.Millisecond {
+		t.Fatalf("20 sends at 50/s should take about 380ms, took %v", elapsed)
+	}
+	if sent, _ := store.counts(); sent != 20 {
+		t.Fatalf("expected 20 sent, got %d", sent)
+	}
+}
+
+func TestRateLimitIsPerChannel(t *testing.T) {
+	items := append(manyPending("sms-", domain.ChannelSMS, 10), manyPending("email-", domain.ChannelEmail, 10)...)
+	store := newFakeStore(items...)
+	cfg := testConfig()
+	cfg.RatePerSecond = 50
+	w := newTestWorker(store, okSender(), cfg)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for _, ch := range []domain.Channel{domain.ChannelSMS, domain.ChannelEmail} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = w.processBatch(context.Background(), ch)
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	if elapsed > 330*time.Millisecond {
+		t.Fatalf("channels should be limited independently (about 180ms), took %v", elapsed)
+	}
+	if sent, _ := store.counts(); sent != 20 {
+		t.Fatalf("expected 20 sent, got %d", sent)
+	}
+}
+
+func TestNoRateLimitWhenDisabled(t *testing.T) {
+	store := newFakeStore(manyPending("sms-", domain.ChannelSMS, 20)...)
+	cfg := testConfig()
+	cfg.BatchSize = 20
+	w := newTestWorker(store, okSender(), cfg)
+
+	start := time.Now()
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("expected no throttling, took %v", elapsed)
 	}
 }
