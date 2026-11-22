@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/EdizKarli/event-driven-notification-system-task/internal/metrics"
 )
 
 func testServer() *Server {
-	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), newFakeStore())
+	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), newFakeStore(), metrics.New())
 }
 
 func TestHealth(t *testing.T) {

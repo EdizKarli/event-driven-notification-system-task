@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
+	"github.com/EdizKarli/event-driven-notification-system-task/internal/metrics"
 )
 
 type NotificationStore interface {
@@ -17,21 +18,28 @@ type NotificationStore interface {
 	GetBatch(ctx context.Context, id string) (*domain.Batch, error)
 	ListNotifications(ctx context.Context, f domain.ListFilter) ([]*domain.Notification, error)
 	CancelNotification(ctx context.Context, id string) (*domain.Notification, error)
+	QueueDepth(ctx context.Context) (map[domain.Channel]*domain.ChannelQueue, error)
+}
+
+type MetricsSource interface {
+	Snapshot() metrics.Snapshot
 }
 
 type Server struct {
-	logger *slog.Logger
-	store  NotificationStore
-	now    func() time.Time
+	logger  *slog.Logger
+	store   NotificationStore
+	metrics MetricsSource
+	now     func() time.Time
 }
 
-func NewServer(logger *slog.Logger, store NotificationStore) *Server {
-	return &Server{logger: logger, store: store, now: time.Now}
+func NewServer(logger *slog.Logger, store NotificationStore, m MetricsSource) *Server {
+	return &Server{logger: logger, store: store, metrics: m, now: time.Now}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /notifications", s.handleCreateNotification)
 	mux.HandleFunc("GET /notifications/{id}", s.handleGetNotification)

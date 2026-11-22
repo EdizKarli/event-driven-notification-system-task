@@ -14,6 +14,7 @@ type fakeStore struct {
 	batches   map[string]*domain.Batch
 	pingErr   error
 	createErr error
+	queueErr  error
 }
 
 func newFakeStore() *fakeStore {
@@ -151,4 +152,26 @@ func (f *fakeStore) CancelNotification(ctx context.Context, id string) (*domain.
 	n.Status = domain.StatusCancelled
 	copied := *n
 	return &copied, nil
+}
+
+func (f *fakeStore) QueueDepth(ctx context.Context) (map[domain.Channel]*domain.ChannelQueue, error) {
+	if f.queueErr != nil {
+		return nil, f.queueErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	depth := domain.NewQueueDepth()
+	for _, n := range f.items {
+		q, ok := depth[n.Channel]
+		if !ok {
+			continue
+		}
+		switch n.Status {
+		case domain.StatusPending:
+			q.Ready[n.Priority]++
+		case domain.StatusProcessing:
+			q.Processing++
+		}
+	}
+	return depth, nil
 }

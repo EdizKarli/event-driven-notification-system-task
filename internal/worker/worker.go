@@ -23,6 +23,18 @@ type Store interface {
 	RecoverStuck(ctx context.Context) (int64, error)
 }
 
+type Metrics interface {
+	RecordSent(ch domain.Channel, providerLatency, deliveryLatency time.Duration)
+	RecordFailed(ch domain.Channel)
+	RecordRetry(ch domain.Channel)
+}
+
+type noopMetrics struct{}
+
+func (noopMetrics) RecordSent(domain.Channel, time.Duration, time.Duration) {}
+func (noopMetrics) RecordFailed(domain.Channel) {}
+func (noopMetrics) RecordRetry(domain.Channel) {}
+
 type Sender interface {
 	Send(ctx context.Context, n *domain.Notification) (*provider.Response, error)
 }
@@ -54,12 +66,17 @@ func DefaultConfig() Config {
 type Worker struct {
 	store    Store
 	sender   Sender
+	metrics  Metrics
 	logger   *slog.Logger
 	cfg      Config
 	limiters map[domain.Channel]*rate.Limiter
 }
 
-func New(store Store, sender Sender, logger *slog.Logger, cfg Config) *Worker {
+func New(store Store, sender Sender, m Metrics, logger *slog.Logger, cfg Config) *Worker {
+	if m == nil {
+		m = noopMetrics{}
+	}
+
 	limit := rate.Inf
 	if cfg.RatePerSecond > 0 {
 		limit = rate.Limit(cfg.RatePerSecond)
@@ -70,7 +87,7 @@ func New(store Store, sender Sender, logger *slog.Logger, cfg Config) *Worker {
 		limiters[ch] = rate.NewLimiter(limit, 1)
 	}
 
-	return &Worker{store: store, sender: sender, logger: logger, cfg: cfg, limiters: limiters}
+	return &Worker{store: store, sender: sender, metrics: m, logger: logger, cfg: cfg, limiters: limiters}
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -151,7 +168,8 @@ func (w *Worker) deliver(ctx context.Context, n *domain.Notification) {
 
 	start := time.Now()
 	resp, err := w.sender.Send(sendCtx, n)
-	duration := time.Since(start).Milliseconds()
+	providerLatency := time.Since(start)
+	duration := providerLatency.Milliseconds()
 
 	storeCtx, cancelStore := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
 	defer cancelStore()
@@ -161,6 +179,7 @@ func (w *Worker) deliver(ctx context.Context, n *domain.Notification) {
 			log.Error("could not mark notification as sent", "error", err)
 			return
 		}
+		w.metrics.RecordSent(n.Channel, providerLatency, time.Since(n.CreatedAt))
 		log.Info("notification sent", "provider_message_id", resp.MessageID, "duration_ms", duration)
 		return
 	}
@@ -181,6 +200,7 @@ func (w *Worker) handleFailure(ctx context.Context, log *slog.Logger, n *domain.
 			log.Error("could not schedule retry", "error", err)
 			return
 		}
+		w.metrics.RecordRetry(n.Channel)
 		log.Warn("notification will be retried",
 			"error", sendErr,
 			"retry_in_ms", delay.Milliseconds(),
@@ -197,6 +217,7 @@ func (w *Worker) handleFailure(ctx context.Context, log *slog.Logger, n *domain.
 		log.Error("could not mark notification as failed", "error", err)
 		return
 	}
+	w.metrics.RecordFailed(n.Channel)
 	log.Error("notification failed", "reason", reason, "error", sendErr, "duration_ms", duration)
 }
 

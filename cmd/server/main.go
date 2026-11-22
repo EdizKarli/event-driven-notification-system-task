@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/api"
+	"github.com/EdizKarli/event-driven-notification-system-task/internal/metrics"
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/provider"
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/store"
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/worker"
@@ -41,8 +42,9 @@ func main() {
 	}
 	defer st.Close()
 
+	recorder := metrics.New()
 	cfg := worker.DefaultConfig()
-	w := worker.New(st, provider.NewClient(providerURL, cfg.SendTimeout), logger, cfg)
+	w := worker.New(st, provider.NewClient(providerURL, cfg.SendTimeout), recorder, logger, cfg)
 	workerDone := make(chan struct{})
 	go func() {
 		w.Run(ctx)
@@ -51,7 +53,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewServer(logger, st).Handler(),
+		Handler:           api.NewServer(logger, st, recorder).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

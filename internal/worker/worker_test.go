@@ -121,7 +121,7 @@ func testConfig() Config {
 }
 
 func newTestWorker(store Store, sender Sender, cfg Config) *Worker {
-	return New(store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+	return New(store, sender, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 }
 
 func TestProcessBatchMarksSent(t *testing.T) {
@@ -404,5 +404,34 @@ func TestRunRecoversStuckNotifications(t *testing.T) {
 
 	if store.recoverCalls.Load() == 0 {
 		t.Fatal("expected the recovery loop to run")
+	}
+}
+
+type countingMetrics struct {
+	sent, failed, retried atomic.Int32
+}
+
+func (m *countingMetrics) RecordSent(domain.Channel, time.Duration, time.Duration) { m.sent.Add(1) }
+func (m *countingMetrics) RecordFailed(domain.Channel) { m.failed.Add(1) }
+func (m *countingMetrics) RecordRetry(domain.Channel) { m.retried.Add(1) }
+
+func TestWorkerRecordsMetrics(t *testing.T) {
+	last := pending("last", domain.ChannelSMS)
+	last.Attempts = domain.DefaultMaxAttempts - 1
+	store := newFakeStore(pending("ok", domain.ChannelSMS), pending("retry", domain.ChannelSMS), last)
+
+	sender := &fakeSender{send: func(n *domain.Notification) (*provider.Response, error) {
+		if n.ID == "ok" {
+			return &provider.Response{MessageID: "m"}, nil
+		}
+		return nil, &provider.Error{StatusCode: 503, Retryable: true}
+	}}
+
+	m := &countingMetrics{}
+	w := New(store, sender, m, slog.New(slog.NewTextHandler(io.Discard, nil)), testConfig())
+	_, _ = w.processBatch(context.Background(), domain.ChannelSMS)
+
+	if m.sent.Load() != 1 || m.retried.Load() != 1 || m.failed.Load() != 1 {
+		t.Fatalf("expected 1 sent, 1 retried, 1 failed; got %d, %d, %d", m.sent.Load(), m.retried.Load(), m.failed.Load())
 	}
 }
