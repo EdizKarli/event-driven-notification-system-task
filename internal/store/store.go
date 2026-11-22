@@ -360,3 +360,38 @@ func (s *Store) MarkFailed(ctx context.Context, id, reason string) error {
 	}
 	return nil
 }
+
+func (s *Store) MarkRetry(ctx context.Context, id, reason string, nextAttemptAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = 'pending',
+			last_error = $2::text,
+			next_attempt_at = $3,
+			locked_until = NULL,
+			updated_at = now()
+		WHERE id = $1::text::uuid AND status = 'processing'`,
+		id, reason, nextAttemptAt,
+	)
+	if err != nil {
+		return fmt.Errorf("mark retry: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RecoverStuck(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = CASE
+				WHEN attempts >= max_attempts THEN 'failed'::notification_status
+				ELSE 'pending'::notification_status
+			END,
+			last_error = 'lease expired before the delivery finished',
+			locked_until = NULL,
+			updated_at = now()
+		WHERE status = 'processing' AND locked_until < now()`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck notifications: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
