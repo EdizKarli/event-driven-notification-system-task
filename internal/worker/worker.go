@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/domain"
 	"github.com/EdizKarli/event-driven-notification-system-task/internal/provider"
 )
@@ -21,32 +23,45 @@ type Sender interface {
 }
 
 type Config struct {
-	BatchSize    int
-	Concurrency  int
-	PollInterval time.Duration
-	Lease        time.Duration
-	SendTimeout  time.Duration
+	BatchSize     int
+	Concurrency   int
+	PollInterval  time.Duration
+	Lease         time.Duration
+	SendTimeout   time.Duration
+	RatePerSecond float64
 }
 
 func DefaultConfig() Config {
 	return Config{
-		BatchSize:    50,
-		Concurrency:  10,
-		PollInterval: 500 * time.Millisecond,
-		Lease:        30 * time.Second,
-		SendTimeout:  10 * time.Second,
+		BatchSize:     50,
+		Concurrency:   10,
+		PollInterval:  500 * time.Millisecond,
+		Lease:         30 * time.Second,
+		SendTimeout:   10 * time.Second,
+		RatePerSecond: 100,
 	}
 }
 
 type Worker struct {
-	store  Store
-	sender Sender
-	logger *slog.Logger
-	cfg    Config
+	store    Store
+	sender   Sender
+	logger   *slog.Logger
+	cfg      Config
+	limiters map[domain.Channel]*rate.Limiter
 }
 
 func New(store Store, sender Sender, logger *slog.Logger, cfg Config) *Worker {
-	return &Worker{store: store, sender: sender, logger: logger, cfg: cfg}
+	limit := rate.Inf
+	if cfg.RatePerSecond > 0 {
+		limit = rate.Limit(cfg.RatePerSecond)
+	}
+
+	limiters := make(map[domain.Channel]*rate.Limiter, len(domain.Channels))
+	for _, ch := range domain.Channels {
+		limiters[ch] = rate.NewLimiter(limit, 1)
+	}
+
+	return &Worker{store: store, sender: sender, logger: logger, cfg: cfg, limiters: limiters}
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -89,9 +104,11 @@ func (w *Worker) processBatch(ctx context.Context, ch domain.Channel) (int, erro
 		return 0, err
 	}
 
+	limiter := w.limiters[ch]
 	sem := make(chan struct{}, w.cfg.Concurrency)
 	var wg sync.WaitGroup
 	for _, n := range items {
+		_ = limiter.Wait(context.WithoutCancel(ctx))
 		sem <- struct{}{}
 		wg.Add(1)
 		go func() {
