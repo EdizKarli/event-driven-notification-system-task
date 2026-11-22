@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -279,4 +280,83 @@ func (s *Store) CancelNotification(ctx context.Context, id string) (*domain.Noti
 		return nil, err
 	}
 	return current, domain.ErrNotCancellable
+}
+
+func (s *Store) ClaimNotifications(ctx context.Context, channel domain.Channel, limit int, lease time.Duration) ([]*domain.Notification, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE notifications
+		SET status = 'processing',
+			attempts = attempts + 1,
+			locked_until = now() + make_interval(secs => $3),
+			updated_at = now()
+		WHERE id IN (
+			SELECT id FROM notifications
+			WHERE status = 'pending'
+				AND channel = $1::text::notification_channel
+				AND next_attempt_at <= now()
+			ORDER BY priority, next_attempt_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING `+notificationColumns,
+		string(channel), limit, lease.Seconds(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("claim notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var claimed []*domain.Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan claimed notification: %w", err)
+		}
+		claimed = append(claimed, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read claimed notifications: %w", err)
+	}
+
+	sort.Slice(claimed, func(i, j int) bool {
+		if claimed[i].Priority.Rank() != claimed[j].Priority.Rank() {
+			return claimed[i].Priority.Rank() < claimed[j].Priority.Rank()
+		}
+		return claimed[i].NextAttemptAt.Before(claimed[j].NextAttemptAt)
+	})
+	return claimed, nil
+}
+
+func (s *Store) MarkSent(ctx context.Context, id, providerMessageID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = 'sent',
+			provider_message_id = NULLIF($2::text, ''),
+			sent_at = now(),
+			locked_until = NULL,
+			last_error = NULL,
+			updated_at = now()
+		WHERE id = $1::text::uuid AND status = 'processing'`,
+		id, providerMessageID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark sent: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) MarkFailed(ctx context.Context, id, reason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = 'failed',
+			last_error = $2::text,
+			locked_until = NULL,
+			updated_at = now()
+		WHERE id = $1::text::uuid AND status = 'processing'`,
+		id, reason,
+	)
+	if err != nil {
+		return fmt.Errorf("mark failed: %w", err)
+	}
+	return nil
 }
