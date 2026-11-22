@@ -1,0 +1,637 @@
+openapi: 3.0.3
+info:
+  title: Event-Driven Notification System
+  version: 1.0.0
+  description: |
+    Accepts notification requests for SMS, email and push, queues them in PostgreSQL and
+    delivers them asynchronously through an external provider (simulated with webhook.site).
+
+    Every response carries an `X-Correlation-ID` header. Send your own to trace a request
+    through the API and worker logs, or let the server generate one.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose setup
+
+tags:
+  - name: Notifications
+  - name: Batches
+  - name: Operations
+
+paths:
+  /notifications:
+    post:
+      tags: [Notifications]
+      summary: Create a notification
+      description: |
+        Validates the notification and stores it as `pending`. Delivery happens asynchronously,
+        so the response is `202 Accepted`. Set `scheduled_at` to deliver it later.
+
+        Send an `Idempotency-Key` header to make retries safe: a repeated request with the same
+        key returns the original notification instead of creating a new one.
+      operationId: createNotification
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewNotification'
+            examples:
+              sms:
+                summary: SMS with high priority
+                value:
+                  recipient: "+905551234567"
+                  channel: sms
+                  content: Your order has shipped
+                  priority: high
+              scheduled:
+                summary: Email scheduled for later
+                value:
+                  recipient: user@example.com
+                  channel: email
+                  content: Your weekly summary is ready
+                  scheduled_at: "2030-01-01T09:00:00Z"
+      responses:
+        '202':
+          description: Notification accepted for delivery, or an idempotent replay of an earlier request.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            Idempotent-Replayed:
+              description: Present and set to `true` when the response is a replay of an earlier request with the same key.
+              schema:
+                type: string
+                enum: ["true"]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: The idempotency key was already used with a different request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      description: |
+        Returns notifications newest first. Filters can be combined. Pagination is cursor based:
+        pass the `next_cursor` from a response as `cursor` to get the next page. The last page
+        has no `next_cursor`.
+      operationId: listNotifications
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/Status'
+        - name: channel
+          in: query
+          schema:
+            $ref: '#/components/schemas/Channel'
+        - name: batch_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          description: Only notifications created at or after this time (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Only notifications created before this time (RFC 3339). Must be after `from`.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          description: Opaque cursor from a previous response.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of notifications.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /notifications/batch:
+    post:
+      tags: [Batches]
+      summary: Create a batch of notifications
+      description: |
+        Creates up to 1000 notifications in one request. The batch is all or nothing: if any
+        item is invalid, nothing is stored and the errors point to the failing items, for
+        example `notifications[3].recipient`.
+      operationId: createBatch
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBatchRequest'
+            example:
+              notifications:
+                - recipient: "+905551234567"
+                  channel: sms
+                  content: Flash sale starts now
+                - recipient: user@example.com
+                  channel: email
+                  content: Flash sale starts now
+                  priority: high
+                - recipient: device-token-1
+                  channel: push
+                  content: Flash sale starts now
+                  priority: low
+      responses:
+        '202':
+          description: Batch accepted for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /notifications/{id}:
+    get:
+      tags: [Notifications]
+      summary: Get a notification
+      operationId: getNotification
+      parameters:
+        - $ref: '#/components/parameters/NotificationID'
+      responses:
+        '200':
+          description: The notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /notifications/{id}/cancel:
+    post:
+      tags: [Notifications]
+      summary: Cancel a pending notification
+      description: |
+        Only `pending` notifications can be cancelled, including scheduled ones and ones
+        waiting for a retry. The check and the update happen atomically, so a cancel never
+        races with the worker.
+      operationId: cancelNotification
+      parameters:
+        - $ref: '#/components/parameters/NotificationID'
+      responses:
+        '200':
+          description: The cancelled notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The notification is no longer pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: only pending notifications can be cancelled, current status is sent
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /batches/{id}:
+    get:
+      tags: [Batches]
+      summary: Get batch status
+      description: Returns the batch size and how many of its notifications are in each status. Use `GET /notifications?batch_id=...` to list the notifications themselves.
+      operationId: getBatch
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The batch summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Batch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health:
+    get:
+      tags: [Operations]
+      summary: Health check
+      description: Returns 200 when the server is running and the database is reachable.
+      operationId: health
+      responses:
+        '200':
+          description: Healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: ok
+                database: up
+        '503':
+          description: The database is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: unavailable
+                database: down
+
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Real-time metrics
+      description: |
+        Queue depth is read live from the database. Delivery counters and latency are
+        collected by the worker since the process started; latency covers the last 1000
+        deliveries per channel.
+      operationId: metrics
+      responses:
+        '200':
+          description: Current metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metrics'
+        '503':
+          description: The database is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    NotificationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client generated key that makes the request safe to retry. At most 255 characters.
+      schema:
+        type: string
+        maxLength: 255
+    CorrelationID:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: Optional id used to trace the request in logs. Generated when missing.
+      schema:
+        type: string
+        maxLength: 128
+
+  headers:
+    CorrelationID:
+      description: The correlation id of the request.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Malformed request, for example invalid JSON, an unknown field or an invalid id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationFailed:
+      description: The request is well formed but fails validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+          example:
+            error: validation failed
+            details:
+              - field: recipient
+                message: must be a phone number in E.164 format, e.g. +905551234567
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Channel:
+      type: string
+      enum: [sms, email, push]
+    Priority:
+      type: string
+      enum: [high, normal, low]
+    Status:
+      type: string
+      enum: [pending, processing, sent, failed, cancelled]
+
+    NewNotification:
+      type: object
+      required: [recipient, channel, content]
+      additionalProperties: false
+      properties:
+        recipient:
+          type: string
+          description: E.164 phone number for sms, email address for email, device token for push.
+          example: "+905551234567"
+        channel:
+          $ref: '#/components/schemas/Channel'
+        content:
+          type: string
+          description: At most 1600 characters for sms, 10000 characters for email and 4096 bytes for push.
+          example: Your order has shipped
+        priority:
+          allOf:
+            - $ref: '#/components/schemas/Priority'
+          default: normal
+        scheduled_at:
+          type: string
+          format: date-time
+          description: Deliver at this time instead of immediately. Must be in the future.
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        batch_id:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        recipient:
+          type: string
+        channel:
+          $ref: '#/components/schemas/Channel'
+        content:
+          type: string
+        priority:
+          $ref: '#/components/schemas/Priority'
+        status:
+          $ref: '#/components/schemas/Status'
+        attempts:
+          type: integer
+          description: How many delivery attempts have been made.
+        max_attempts:
+          type: integer
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: Earliest time of the next delivery attempt (scheduled time or retry time).
+        provider_message_id:
+          type: string
+          description: Message id returned by the provider after a successful delivery.
+        last_error:
+          type: string
+          description: Error of the most recent failed attempt.
+        correlation_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: string
+          format: date-time
+
+    NotificationPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        next_cursor:
+          type: string
+          description: Present when there are more results.
+
+    CreateBatchRequest:
+      type: object
+      required: [notifications]
+      properties:
+        notifications:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/NewNotification'
+
+    CreateBatchResponse:
+      type: object
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+        total:
+          type: integer
+        notification_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    Batch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        total:
+          type: integer
+        status_counts:
+          type: object
+          additionalProperties:
+            type: integer
+          example:
+            sent: 990
+            pending: 8
+            failed: 2
+        created_at:
+          type: string
+          format: date-time
+
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+        database:
+          type: string
+
+    LatencySummary:
+      type: object
+      properties:
+        samples:
+          type: integer
+        avg:
+          type: number
+        p50:
+          type: number
+        p95:
+          type: number
+        p99:
+          type: number
+
+    ChannelQueue:
+      type: object
+      properties:
+        ready:
+          type: object
+          description: Pending notifications that are due now, by priority.
+          properties:
+            high:
+              type: integer
+            normal:
+              type: integer
+            low:
+              type: integer
+        scheduled:
+          type: integer
+          description: Pending notifications due later (scheduled or waiting for a retry).
+        processing:
+          type: integer
+
+    ChannelStats:
+      type: object
+      properties:
+        sent:
+          type: integer
+        failed:
+          type: integer
+        retried:
+          type: integer
+        success_rate:
+          type: number
+          nullable: true
+          description: sent / (sent + failed); null when nothing has finished yet.
+        provider_latency_ms:
+          $ref: '#/components/schemas/LatencySummary'
+        delivery_latency_ms:
+          $ref: '#/components/schemas/LatencySummary'
+
+    Metrics:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        queue:
+          type: object
+          properties:
+            sms:
+              $ref: '#/components/schemas/ChannelQueue'
+            email:
+              $ref: '#/components/schemas/ChannelQueue'
+            push:
+              $ref: '#/components/schemas/ChannelQueue'
+        deliveries:
+          type: object
+          properties:
+            uptime_seconds:
+              type: integer
+            totals:
+              type: object
+              properties:
+                sent:
+                  type: integer
+                failed:
+                  type: integer
+                retried:
+                  type: integer
+                success_rate:
+                  type: number
+                  nullable: true
+            channels:
+              type: object
+              properties:
+                sms:
+                  $ref: '#/components/schemas/ChannelStats'
+                email:
+                  $ref: '#/components/schemas/ChannelStats'
+                push:
+                  $ref: '#/components/schemas/ChannelStats'
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    ValidationError:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
